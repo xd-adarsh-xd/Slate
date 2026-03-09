@@ -22,9 +22,9 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--t1);heigh
 #home{display:flex;flex-direction:column;background:var(--bg);}
 
 /* HOME */
-.htop{padding:48px 24px 16px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
-.logo{font-family:'Syne',sans-serif;font-size:26px;font-weight:800;color:#fff;white-space:nowrap;animation:glow 3s ease-in-out infinite;}
-.vtag{font-family:'Syne',sans-serif;font-size:26px;font-weight:800;color:rgba(255,255,255,0.45);white-space:nowrap;animation:glow 3s ease-in-out infinite 1.5s;}
+.htop{padding:48px 24px 16px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;min-width:0;gap:12px;}
+.logo{font-family:'Syne',sans-serif;font-size:clamp(18px,5vw,26px);font-weight:800;color:#fff;white-space:nowrap;animation:glow 3s ease-in-out infinite;}
+.vtag{font-family:'Syne',sans-serif;font-size:clamp(18px,5vw,26px);font-weight:800;color:#fff;white-space:nowrap;animation:glow 3s ease-in-out infinite;}
 .hscroll{flex:1;overflow-y:auto;padding:0 16px 100px;}
 .stag{font-size:10px;font-weight:500;letter-spacing:.12em;text-transform:uppercase;color:var(--t3);padding:16px 8px 10px;}
 .folder{background:var(--s1);border:1px solid var(--b1);border-radius:14px;overflow:hidden;margin-bottom:8px;transition:border-color .2s;}
@@ -243,7 +243,7 @@ input[type=file]{display:none;}
 <!-- HOME -->
 <div class="screen" id="home">
   <div class="htop">
-    <div class="logo">Slate <span style="font-size:13px;font-weight:400;color:var(--t2)">(Demo)</span></div>
+    <div class="logo">Slate <span style="font-size:clamp(10px,3vw,13px);font-weight:400;color:var(--t2)">(Demo)</span></div>
     <div class="vtag">V1</div>
   </div>
   <div class="hscroll" id="hscroll">

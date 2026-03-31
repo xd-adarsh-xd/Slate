@@ -138,10 +138,14 @@ body{font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-seri
 .todocolx{width:16px;height:16px;border:none;background:transparent;color:var(--t3);font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:4px;flex-shrink:0;}
 .todocolx:active{background:rgba(252,92,92,.15);color:var(--red);}
 .todochips{flex:1;overflow-y:auto;padding:0 6px;}
-.todochip{background:rgba(255,255,255,.04);border-radius:8px;padding:7px 8px;margin-bottom:5px;font-size:12px;border-left:3px solid var(--t3);cursor:pointer;word-break:break-word;position:relative;user-select:none;}
-.todochip:active{opacity:.7;}
+.todochip{background:rgba(255,255,255,.04);border-radius:8px;padding:7px 8px;margin-bottom:5px;font-size:12px;border-left:3px solid var(--t3);cursor:pointer;word-break:break-word;position:relative;user-select:none;-webkit-user-select:none;touch-action:none;transition:transform .12s var(--ease-out-back);}
+.todochip:focus,.todochip[contenteditable="true"]{outline:none;box-shadow:none;background:rgba(255,255,255,.08);}
+.todochip.pressing{transform:scale(.96);}
 .todoadd{font-size:11px;color:var(--t3);padding:4px 8px 8px;cursor:pointer;flex-shrink:0;}
 .todoadd:active{color:var(--t2);}
+.col-dragging{opacity:0.25;}
+.col-ghost{position:fixed;pointer-events:none;z-index:9999;background:var(--s2);border:1px solid var(--b2);border-radius:10px;opacity:0.88;box-shadow:0 4px 20px rgba(0,0,0,.6);padding:6px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--t2);min-width:80px;}
+.col-drop-indicator{width:3px;background:rgba(220,220,220,0.9);border-radius:2px;flex-shrink:0;align-self:stretch;margin:4px 2px;pointer-events:none;}
 
 /* Chip context menu */
 .chipmenu{position:fixed;background:var(--s2);border:1px solid var(--b2);border-radius:12px;
@@ -3309,7 +3313,7 @@ function closeCard(btn){
 }
 
 /* ── Todo helpers ── */
-const CHIP_COLORS=['var(--t3)','var(--purple)','var(--pink)','var(--green)','var(--amber)','var(--blue)','var(--red)'];
+const CHIP_COLORS=PALETTE;
 
 function makeChipHTML(text, color='var(--t3)'){
   return `<div class="todochip" style="border-left-color:${color}" contenteditable="false">${text}</div>`;
@@ -3331,90 +3335,82 @@ function makeTodoCol(header, chips=[]){
   </div>`;
 }
 
-/* Wire up column drag+tap — called after col is in DOM */
-function initTodoCol(col){
-  const bar=col.querySelector('[data-coldrag]');
+/* ── Single global column drag manager ── */
+let _colDrag=null;
+
+function _colDragStart(col, cx, cy){
   const titleEl=col.querySelector('[data-coltitle]');
-  if(!bar||!titleEl||col._colDragInited) return;
-  col._colDragInited=true;
-  let on=false,moved=false,sx=0,sy=0,ghost=null,indicator=null;
-
-  function start(cx,cy,t){
-    if(t.tagName==='BUTTON') return;
-    on=true; moved=false; sx=cx; sy=cy;
-  }
-  function move(cx,cy){
-    if(!on) return;
-    if(!moved && Math.hypot(cx-sx,cy-sy)>8){
-      moved=true;
-      dragging=true; pan=false;
-      ghost=document.createElement('div');
-      ghost.className='col-ghost';
-      ghost.style.width=col.offsetWidth+'px';
-      ghost.style.height=Math.min(col.offsetHeight,160)+'px';
-      ghost.innerHTML=`<div style="padding:8px 10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--t2)">${titleEl.textContent}</div>`;
-      document.body.appendChild(ghost);
-      col.classList.add('col-dragging');
-    }
-    if(moved && ghost){
-      ghost.style.left=(cx-ghost.offsetWidth/2)+'px';
-      ghost.style.top=(cy-20)+'px';
-      updateColIndicator(cx,cy,col,indicator);
-      // remove old indicator, get new
-      if(indicator){indicator.remove();indicator=null;}
-      const t2=findColDropTarget(cx,cy,col);
-      if(t2){indicator=document.createElement('div');indicator.className='col-drop-indicator';t2.parent.insertBefore(indicator,t2.before||null);}
-    }
-  }
-  function end(cx,cy){
-    on=false;
-    if(moved){
-      if(ghost){ghost.remove();ghost=null;}
-      col.classList.remove('col-dragging');
-      if(indicator){indicator.remove();indicator=null;}
-      dragging=false;
-      const tgt=findColDropTarget(cx,cy,col);
-      if(tgt) tgt.parent.insertBefore(col,tgt.before||null);
-      // refit both source and target cards (may be same)
-      const cards=new Set([...document.querySelectorAll('.todocols')].map(c=>c.closest('.card')));
-      cards.forEach(c=>{ if(c) fitTodoCard(c); });
-      col._colDragInited=false; initTodoCol(col);
-    } else {
-      // tap — if on title text, edit
-      const hit=document.elementFromPoint(sx,sy);
-      if(hit===titleEl||titleEl.contains(hit)){
-        titleEl.contentEditable='true'; titleEl.focus(); selectAll(titleEl);
-        titleEl.onblur=()=>{titleEl.contentEditable='false';if(!titleEl.textContent.trim())titleEl.textContent='Column';};
-      }
-    }
-  }
-
-  bar.addEventListener('touchstart',e=>{e.stopPropagation();start(e.touches[0].clientX,e.touches[0].clientY,e.target);},{passive:true});
-  document.addEventListener('touchmove',e=>{if(on)move(e.touches[0].clientX,e.touches[0].clientY);},{passive:true});
-  document.addEventListener('touchend',e=>{if(on)end(e.changedTouches[0].clientX,e.changedTouches[0].clientY);},{passive:true});
-  bar.addEventListener('mousedown',e=>{if(e.button===0){e.stopPropagation();start(e.clientX,e.clientY,e.target);}});
-  document.addEventListener('mousemove',e=>{if(on)move(e.clientX,e.clientY);});
-  document.addEventListener('mouseup',e=>{if(on)end(e.clientX,e.clientY);});
+  _colDrag={col, titleEl, sx:cx, sy:cy, moved:false, ghost:null, indicator:null};
 }
-
-function updateColIndicator(){}  // stub, logic inline above
-
-function findColDropTarget(cx,cy,draggedCol){
-  const containers=[...document.querySelectorAll('.todocols')];
-  for(const container of containers){
+function _colDragMove(cx, cy){
+  if(!_colDrag) return;
+  const d=_colDrag;
+  if(!d.moved && Math.hypot(cx-d.sx, cy-d.sy)>8){
+    d.moved=true; dragging=true; pan=false;
+    d.ghost=document.createElement('div');
+    d.ghost.className='col-ghost';
+    d.ghost.textContent=d.titleEl.textContent;
+    document.body.appendChild(d.ghost);
+    d.col.classList.add('col-dragging');
+  }
+  if(!d.moved) return;
+  d.ghost.style.left=(cx-d.ghost.offsetWidth/2)+'px';
+  d.ghost.style.top=(cy-20)+'px';
+  if(d.indicator){d.indicator.remove(); d.indicator=null;}
+  const tgt=_colFindDrop(cx, cy, d.col);
+  if(tgt){
+    d.indicator=document.createElement('div');
+    d.indicator.className='col-drop-indicator';
+    tgt.parent.insertBefore(d.indicator, tgt.before||null);
+  }
+}
+function _colDragEnd(cx, cy){
+  if(!_colDrag) return;
+  const d=_colDrag; _colDrag=null;
+  if(d.ghost) d.ghost.remove();
+  if(d.indicator) d.indicator.remove();
+  d.col.classList.remove('col-dragging');
+  dragging=false;
+  if(d.moved){
+    const tgt=_colFindDrop(cx, cy, d.col);
+    if(tgt) tgt.parent.insertBefore(d.col, tgt.before||null);
+    document.querySelectorAll('.todocols').forEach(tc=>{ const c=tc.closest('.card'); if(c) fitTodoCard(c); });
+  } else {
+    const hit=document.elementFromPoint(cx,cy);
+    if(hit===d.titleEl||d.titleEl.contains(hit)){
+      d.titleEl.contentEditable='true'; d.titleEl.focus(); selectAll(d.titleEl);
+      d.titleEl.onblur=()=>{d.titleEl.contentEditable='false';if(!d.titleEl.textContent.trim())d.titleEl.textContent='Column';};
+    }
+  }
+}
+function _colFindDrop(cx, cy, draggedCol){
+  for(const container of document.querySelectorAll('.todocols')){
     const cr=container.getBoundingClientRect();
     if(cx<cr.left-60||cx>cr.right+60||cy<cr.top-60||cy>cr.bottom+60) continue;
-    const cols=[...container.children].filter(c=>c.classList.contains('todocol')&&c!==draggedCol&&!c.classList.contains('col-drop-indicator'));
-    for(let i=0;i<cols.length;i++){
-      const r=cols[i].getBoundingClientRect();
-      if(cx<r.left+r.width/2) return {parent:container,before:cols[i]};
+    const cols=[...container.children].filter(c=>c.classList.contains('todocol')&&c!==draggedCol);
+    for(const c of cols){
+      const r=c.getBoundingClientRect();
+      if(cx<r.left+r.width/2) return {parent:container, before:c};
     }
-    return {parent:container,before:null};
+    return {parent:container, before:null};
   }
   return null;
 }
+document.addEventListener('touchmove',e=>{ if(_colDrag&&!_chipDragActive) _colDragMove(e.touches[0].clientX,e.touches[0].clientY); },{passive:true});
+document.addEventListener('touchend',e=>{ if(_colDrag&&!_chipDragActive) _colDragEnd(e.changedTouches[0].clientX,e.changedTouches[0].clientY); },{passive:true});
+document.addEventListener('mousemove',e=>{ if(_colDrag&&!_chipDragActive) _colDragMove(e.clientX,e.clientY); });
+document.addEventListener('mouseup',e=>{ if(_colDrag&&!_chipDragActive) _colDragEnd(e.clientX,e.clientY); });
 
-/* old stub */
+function initTodoCol(col){
+  const bar=col.querySelector('[data-coldrag]');
+  if(!bar||col._colDragInited) return;
+  col._colDragInited=true;
+  bar.addEventListener('touchstart',e=>{ if(e.target.tagName==='BUTTON') return; e.stopPropagation(); _colDragStart(col,e.touches[0].clientX,e.touches[0].clientY); },{passive:true});
+  bar.addEventListener('mousedown',e=>{ if(e.button!==0||e.target.tagName==='BUTTON') return; e.stopPropagation(); _colDragStart(col,e.clientX,e.clientY); });
+}
+
+function updateColIndicator(){}
+function findColDropTarget(cx,cy,col){ return _colFindDrop(cx,cy,col); }
 function colTitleTap(){}
 
 function addTodoCol(btn){
@@ -4410,147 +4406,200 @@ function initSheet(card, data, cols, savedColWidths){
 function addChip(btn){
   const col=btn.closest('.todocol');
   const chips=col.querySelector('.todochips');
-  const div=document.createElement('div');
-  div.innerHTML=makeChipHTML('New task','var(--t3)');
-  const chip=div.firstElementChild;
+  const chip=_makeChipEl('New task','var(--t3)');
   chips.appendChild(chip);
   attachChipEvents(chip);
-  chip.contentEditable='true'; chip.focus(); selectAll(chip);
-  chip.onblur=()=>{
-    chip.contentEditable='false';
-    if(!chip.textContent.trim()) chip.remove();
-    fitTodoCard(col.closest('.card'));
-  };
+  _chipStartEdit(chip);
   fitTodoCard(col.closest('.card'));
 }
 
-/* ── Chip long-press / context menu ── */
-let _chipTimer=null, _activeMenu=null;
-const LONG_PRESS_MS=500;
+/* ══════════════════════════════════
+   CHIP SYSTEM — clean rewrite
+══════════════════════════════════ */
+let _chipDragActive=null;
+let _chipMenuOpen=null;
+const _CHIP_LP=300;
+const _CHIP_DT=4;
 
-function chipTouchStart(chip,e){
-  e.stopPropagation();
-  const t=e.touches[0];
-  chip._csX=t.clientX; chip._csY=t.clientY; chip._cMoved=false;
-  clearTimeout(_chipTimer);
-  _chipTimer=setTimeout(()=>{ if(!chip._cMoved) showChipMenu(chip, chip._csX, chip._csY); }, LONG_PRESS_MS);
+function _makeChipEl(text, color){
+  const d=document.createElement('div');
+  d.className='todochip';
+  d.style.borderLeftColor=color||'var(--t3)';
+  d.contentEditable='false';
+  d.textContent=text;
+  return d;
 }
-function chipTouchMove(chip,e){
-  const t=e.touches[0];
-  if(Math.hypot(t.clientX-chip._csX, t.clientY-chip._csY)>8){
-    chip._cMoved=true; clearTimeout(_chipTimer);
+
+function _chipStartEdit(chip){
+  chip.contentEditable='true';
+  requestAnimationFrame(()=>{
+    chip.focus();
+    try{ const r=document.createRange(); r.selectNodeContents(chip); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); }catch(e){}
+  });
+  chip.onblur=()=>{
+    chip.contentEditable='false'; chip.onblur=null;
+    if(!chip.textContent.trim()){ const c=chip.closest('.card'); chip.remove(); if(c) fitTodoCard(c); }
+    else { fitTodoCard(chip.closest('.card')); }
+  };
+}
+
+/* ── Single global chip drag manager (mirrors col drag) ── */
+function _chipDragStart(chip, cx, cy){
+  _chipDragActive={chip, sx:cx, sy:cy, moved:false, ghost:null, indicator:null};
+}
+function _chipDragMove(cx, cy){
+  if(!_chipDragActive) return;
+  const d=_chipDragActive;
+  if(!d.moved && Math.hypot(cx-d.sx, cy-d.sy)>_CHIP_DT){
+    d.moved=true; dragging=true; pan=false;
+    d.ghost=_makeChipEl(d.chip.textContent, d.chip.style.borderLeftColor);
+    d.ghost.style.cssText+=`;position:fixed;pointer-events:none;z-index:9999;opacity:0.88;width:${d.chip.offsetWidth}px;box-shadow:0 4px 20px rgba(0,0,0,.6);`;
+    document.body.appendChild(d.ghost);
+    d.chip.classList.add('col-dragging');
+  }
+  if(!d.moved) return;
+  d.ghost.style.left=(cx-d.ghost.offsetWidth/2)+'px';
+  d.ghost.style.top=(cy-d.ghost.offsetHeight/2)+'px';
+  if(d.indicator){d.indicator.remove(); d.indicator=null;}
+  const tgt=_chipFindDrop(cx, cy, d.chip);
+  if(tgt){
+    d.indicator=document.createElement('div');
+    d.indicator.style.cssText='height:3px;background:rgba(220,220,220,0.9);border-radius:2px;margin:2px 0;pointer-events:none;flex-shrink:0;';
+    tgt.parent.insertBefore(d.indicator, tgt.before||null);
   }
 }
-function chipTouchEnd(chip,e){
-  clearTimeout(_chipTimer);
-  if(!chip._cMoved && !_activeMenu){
-    e.preventDefault();
-    chip.contentEditable='true'; chip.focus(); selectAll(chip);
-    chip.onblur=()=>{ chip.contentEditable='false'; if(!chip.textContent.trim()){const c=chip.closest('.card');chip.remove();if(c)fitTodoCard(c);} };
+function _chipDragEnd(cx, cy){
+  if(!_chipDragActive) return;
+  const d=_chipDragActive; _chipDragActive=null;
+  if(d.ghost) d.ghost.remove();
+  if(d.indicator) d.indicator.remove();
+  d.chip.classList.remove('col-dragging');
+  dragging=false;
+  if(d.moved){
+    const tgt=_chipFindDrop(cx, cy, d.chip);
+    if(tgt) tgt.parent.insertBefore(d.chip, tgt.before||null);
+    document.querySelectorAll('.card[data-type="todo"]').forEach(c=>fitTodoCard(c));
   }
 }
-function chipMouseStart(chip,e){
-  e.stopPropagation();
-  chip._csX=e.clientX; chip._csY=e.clientY; chip._cMoved=false;
-  clearTimeout(_chipTimer);
-  _chipTimer=setTimeout(()=>{ if(!chip._cMoved) showChipMenu(chip, chip._csX, chip._csY); }, LONG_PRESS_MS);
-}
-function chipMouseMove(chip,e){
-  if(Math.hypot(e.clientX-chip._csX, e.clientY-chip._csY)>8){
-    chip._cMoved=true; clearTimeout(_chipTimer);
+function _chipFindDrop(cx, cy, chip){
+  for(const container of document.querySelectorAll('.todochips')){
+    const r=container.getBoundingClientRect();
+    if(cx<r.left-50||cx>r.right+50||cy<r.top-80||cy>r.bottom+80) continue;
+    const chips=[...container.querySelectorAll('.todochip')].filter(c=>c!==chip);
+    for(const c of chips){
+      const cr=c.getBoundingClientRect();
+      if(cy<cr.top+cr.height/2) return {parent:container, before:c};
+    }
+    return {parent:container, before:null};
   }
+  return null;
 }
-function chipMouseEnd(chip,e){
-  clearTimeout(_chipTimer);
-  if(!chip._cMoved && !_activeMenu){
-    chip.contentEditable='true'; chip.focus(); selectAll(chip);
-    chip.onblur=()=>{ chip.contentEditable='false'; if(!chip.textContent.trim()){const c=chip.closest('.card');chip.remove();if(c)fitTodoCard(c);} };
-  }
-}
+document.addEventListener('touchmove',e=>{ if(_chipDragActive) _chipDragMove(e.touches[0].clientX,e.touches[0].clientY); },{passive:true});
+document.addEventListener('touchend',e=>{ if(_chipDragActive) _chipDragEnd(e.changedTouches[0].clientX,e.changedTouches[0].clientY); },{passive:true});
+document.addEventListener('mousemove',e=>{ if(_chipDragActive) _chipDragMove(e.clientX,e.clientY); });
+document.addEventListener('mouseup',e=>{ if(_chipDragActive) _chipDragEnd(e.clientX,e.clientY); });
 
 function attachChipEvents(chip){
-  chip.ontouchstart = e => chipTouchStart(chip, e);
-  chip.ontouchmove  = e => chipTouchMove(chip, e);
-  chip.ontouchend   = e => chipTouchEnd(chip, e);
-  chip.onmousedown  = e => { if(e.button===2) return; chipMouseStart(chip, e); };
-  chip.onmousemove  = e => chipMouseMove(chip, e);
-  chip.onmouseup    = e => chipMouseEnd(chip, e);
-  chip.oncontextmenu= e => { e.preventDefault(); e.stopPropagation(); showChipMenu(chip, e.clientX, e.clientY); };
+  let _lpTimer=null, _sx=0, _sy=0, _armed=false;
+  function _down(cx,cy){
+    if(chip.contentEditable==='true') return;
+    _sx=cx; _sy=cy; _armed=true;
+    chip.classList.add('pressing');
+    clearTimeout(_lpTimer);
+    _lpTimer=setTimeout(()=>{ if(_armed){ _armed=false; chip.classList.remove('pressing'); _chipShowMenu(chip,_sx,_sy); } }, _CHIP_LP);
+  }
+  function _move(cx,cy){
+    if(!_armed) return;
+    if(Math.hypot(cx-_sx,cy-_sy)>_CHIP_DT){
+      clearTimeout(_lpTimer); chip.classList.remove('pressing'); _armed=false;
+      _chipDragStart(chip,cx,cy);
+    }
+  }
+  function _up(){ clearTimeout(_lpTimer); chip.classList.remove('pressing'); if(_armed){ _armed=false; _chipStartEdit(chip); } }
+  function _cancel(){ clearTimeout(_lpTimer); chip.classList.remove('pressing'); _armed=false; }
+  chip.addEventListener('touchstart',e=>{ e.stopPropagation(); _down(e.touches[0].clientX,e.touches[0].clientY); },{passive:true});
+  chip.addEventListener('touchmove',e=>{ _move(e.touches[0].clientX,e.touches[0].clientY); },{passive:true});
+  chip.addEventListener('touchend',e=>{ _up(); },{passive:true});
+  chip.addEventListener('touchcancel',()=>_cancel());
+  chip.addEventListener('mousedown',e=>{ if(e.button===0){ e.stopPropagation(); _down(e.clientX,e.clientY); } });
+  chip.addEventListener('mousemove',e=>{ _move(e.clientX,e.clientY); });
+  chip.addEventListener('mouseup',()=>_up());
+  chip.addEventListener('contextmenu',e=>{ e.preventDefault(); e.stopPropagation(); });
 }
 
-function showChipMenu(chip, cx, cy){
-  closeChipMenu();
+/* ── Chip context menu ── */
+function _chipShowMenu(chip,cx,cy){
+  _chipCloseMenu();
   const menu=document.createElement('div');
   menu.className='chipmenu';
+
+  // Color row
   const colorRow=document.createElement('div');
   colorRow.className='chipmenu-colors';
   CHIP_COLORS.forEach(c=>{
     const dot=document.createElement('div');
-    dot.className='chipcolor';
+    dot.className='chipcolor'+(chip.style.borderLeftColor===c?' active':'');
     dot.style.background=c;
-    dot.style.borderColor=chip.style.borderLeftColor===c?'#fff':'transparent';
-    dot.ontouchend=dot.onclick=e=>{e.stopPropagation();chip.style.borderLeftColor=c;closeChipMenu();};
+    dot.addEventListener('click',e=>{ e.stopPropagation(); chip.style.borderLeftColor=c; _chipCloseMenu(); });
     colorRow.appendChild(dot);
   });
   menu.appendChild(colorRow);
+
+  // Actions
   const actions=[
-    {label:'Edit', icon:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`, fn:()=>{ chip.contentEditable='true'; chip.focus(); selectAll(chip); chip.onblur=()=>{chip.contentEditable='false';if(!chip.textContent.trim()){const c=chip.closest('.card');chip.remove();if(c)fitTodoCard(c);}};} },
-    {label:'Add above', icon:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>`,  fn:()=>insertChip(chip,'before')},
-    {label:'Add below', icon:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>`,  fn:()=>insertChip(chip,'after')},
-    {label:'Remove', icon:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`, fn:()=>{ const c=chip.closest('.card'); chip.remove(); if(c)fitTodoCard(c); }, danger:true},
+    {label:'Edit',      icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+      fn:()=>{ _chipCloseMenu(); setTimeout(()=>_chipStartEdit(chip),80); }},
+    {label:'Add above', icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
+      fn:()=>{ _chipCloseMenu(); _chipInsert(chip,'before'); }},
+    {label:'Add below', icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>',
+      fn:()=>{ _chipCloseMenu(); _chipInsert(chip,'after'); }},
+    {label:'Remove',    danger:true, icon:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
+      fn:()=>{ const c=chip.closest('.card'); _chipCloseMenu(); chip.remove(); if(c) fitTodoCard(c); }},
   ];
   actions.forEach(a=>{
     const item=document.createElement('div');
     item.className='chipmenu-item'+(a.danger?' danger':'');
-    item.textContent=a.label;
-    item.ontouchend=item.onclick=e=>{e.stopPropagation();closeChipMenu();a.fn();};
+    item.innerHTML=`<span style="display:flex;align-items:center;opacity:.7">${a.icon}</span><span>${a.label}</span>`;
+    item.addEventListener('click',e=>{ e.stopPropagation(); a.fn(); });
     menu.appendChild(item);
   });
-  // position near touch point
-  const x=Math.max(8, Math.min(cx, window.innerWidth-180));
-  const y=Math.max(8, Math.min(cy+8, window.innerHeight-220));
-  menu.style.left=x+'px';
-  menu.style.top=y+'px';
+
+  // Position
+  const x=Math.max(8,Math.min(cx,window.innerWidth-210));
+  const y=Math.max(8,Math.min(cy+10,window.innerHeight-260));
+  menu.style.left=x+'px'; menu.style.top=y+'px';
   document.body.appendChild(menu);
-  _activeMenu=menu;
-  // Close only when tapping OUTSIDE the menu
-  function onOutsideTouch(e){
-    if(_activeMenu && !_activeMenu.contains(e.target)){
-      closeChipMenu();
-    } else if(_activeMenu){
-      // tapped inside — let it propagate, re-arm listener
-      setTimeout(()=>document.addEventListener('touchend',onOutsideTouch,{once:true,passive:true}),50);
-    }
-  }
-  function onOutsideClick(e){
-    if(_activeMenu && !_activeMenu.contains(e.target)) closeChipMenu();
-    else if(_activeMenu) setTimeout(()=>document.addEventListener('click',onOutsideClick,{once:true}),50);
-  }
-  setTimeout(()=>{
-    document.addEventListener('touchend',onOutsideTouch,{once:true,passive:true});
-    document.addEventListener('click',onOutsideClick,{once:true});
-  },300);
+  _chipMenuOpen=menu;
+  setTimeout(()=>{ document.addEventListener('click',_chipOutsideDown,{capture:true,once:true}); },100);
 }
 
-function closeChipMenu(){
-  if(_activeMenu){_activeMenu.remove();_activeMenu=null;}
+function _chipOutsideDown(e){
+  if(_chipMenuOpen && !_chipMenuOpen.contains(e.target)){
+    _chipCloseMenu();
+  } else if(_chipMenuOpen){
+    setTimeout(()=>document.addEventListener('click',_chipOutsideDown,{capture:true,once:true}),50);
+  }
 }
 
-function insertChip(ref,where){
-  const div=document.createElement('div');
-  div.innerHTML=makeChipHTML('New task','var(--t3)');
-  const chip=div.firstElementChild;
-  attachChipEvents(chip);
+function _chipCloseMenu(){
+  if(_chipMenuOpen){ _chipMenuOpen.remove(); _chipMenuOpen=null; }
+  document.removeEventListener('click',_chipOutsideDown,{capture:true});
+}
+
+// Keep these for backward compat (called from save/restore)
+let _activeMenu=null;
+function closeChipMenu(){ _chipCloseMenu(); }
+
+function insertChip(ref,where){ _chipInsert(ref,where); }
+function _chipInsert(ref,where){
   const chips=ref.closest('.todochips');
+  if(!chips) return;
+  const chip=_makeChipEl('New task','var(--t3)');
   if(where==='before') chips.insertBefore(chip,ref);
-  else ref.after(chip);
-  chip.contentEditable='true'; chip.focus(); selectAll(chip);
-  chip.onblur=()=>{
-    chip.contentEditable='false';
-    if(!chip.textContent.trim()) chip.remove();
-    fitTodoCard(chip.closest('.card'));
-  };
-  fitTodoCard(ref.closest('.card'));
+  else { const n=ref.nextSibling; if(n) chips.insertBefore(chip,n); else chips.appendChild(chip); }
+  attachChipEvents(chip);
+  fitTodoCard(chip.closest('.card'));
+  _chipStartEdit(chip);
 }
 
 /* File pickers */
@@ -4943,14 +4992,16 @@ function makeDrag(card){
     moved=false; longFired=false; on=true;
     sx=cx; sy=cy;
     ox=parseFloat(card.style.left)||0; oy=parseFloat(card.style.top)||0;
-    // Track if touch started on the title label (for double-tap rename)
     titleTouchTarget = t.closest('.cbarlbl') ? t.closest('.cbarlbl') : null;
     pushUndo();
     bringUp(card);
-    clearTimeout(lpTimer);
-    lpTimer=setTimeout(()=>{
-      if(!moved){ longFired=true; on=false; dragging=false; showCardMenu(card,sx,sy); }
-    },500);
+    // Only arm long-press menu when touch originates on cbar (not card body)
+    if(_startedOnCbar){
+      clearTimeout(lpTimer);
+      lpTimer=setTimeout(()=>{
+        if(!moved && !_chipMenuOpen && !_chipDragActive){ longFired=true; on=false; dragging=false; showCardMenu(card,sx,sy); }
+      },500);
+    }
   }
 
   function move(cx,cy){
@@ -5042,6 +5093,7 @@ function makeDrag(card){
   card.addEventListener('contextmenu',e=>{
     e.preventDefault(); e.stopPropagation();
     if(msMode){ showMsMenu(e.clientX,e.clientY); return; }
+    if(!e.target.closest('.cbar')) return;
     showCardMenu(card,e.clientX,e.clientY);
   });
 }

@@ -1333,15 +1333,13 @@ function authGuest(){
 }
 
 async function authGoogle(){
-  const btn=document.getElementById('authGoogleBtn');
   const err=document.getElementById('authErr');
-  btn.textContent='...'; btn.disabled=true; err.textContent='';
+  err.textContent='';
   try{
     const {data,error}=await _sb.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});
     if(error) throw error;
   } catch(e){
     err.textContent=e.message||'Google sign-in failed.';
-    btn.textContent='Google'; btn.disabled=false;
   }
 }
 
@@ -6577,15 +6575,13 @@ async function authPopupSubmit(){
 }
 
 async function authPopupGoogle(){
-  const btn=document.getElementById('authPopupGoogleBtn');
   const err=document.getElementById('authPopupErr');
-  btn.textContent='...'; btn.disabled=true; err.textContent='';
+  err.textContent='';
   try{
     const {data,error}=await _sb.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});
     if(error) throw error;
   } catch(e){
     err.textContent=e.message||'Google sign-in failed.';
-    btn.textContent='Google'; btn.disabled=false;
   }
 }
 

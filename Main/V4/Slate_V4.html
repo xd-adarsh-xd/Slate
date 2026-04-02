@@ -1642,6 +1642,25 @@ async function _isUsernameTaken(username){
   }catch(e){ return false; }
 }
 
+async function _isEmailRegistered(email){
+  try{
+    const {error}=await _sb.auth.signInWithPassword({email,password:'__slate_preflight_check__'});
+    if(!error) return true;
+    const msg=(error.message||'').toLowerCase();
+    if(msg.includes('invalid')||msg.includes('credentials')||msg.includes('password')||error.status===401) return true;
+    return false;
+  }catch(e){ return false; }
+}
+function _isDuplicateEmailError(error){
+  if(!error) return false;
+  const msg=(error.message||'')+(error.msg||'')+(error.error_description||'');
+  const code=(error.code||'').toLowerCase();
+  if(msg.includes('already registered')||msg.includes('already in use')||msg.includes('user already registered')||msg.includes('identity already exists')||msg.includes('email already registered')) return true;
+  if(code==='auth/user_already_exists'||code==='auth/email_already_exists'||code==='duplicate_email') return true;
+  if(error.status===409||error.status===422) return true;
+  return false;
+}
+
 // Fetch profile row from Supabase and sync to localStorage + DOM.
 // Creates a row for OAuth users who never went through email signup.
 async function _loadUserProfile(user){
@@ -1926,14 +1945,20 @@ async function authSubmit(){
       if(!_checkSignupThrottle(err)){btn.textContent='Sign Up';btn.disabled=false;return;}
       if(!_validateUsername(username,err)){btn.textContent='Sign Up';btn.disabled=false;return;}
       if(pass.length<6){err.textContent='Password must be at least 6 characters.';btn.textContent='Sign Up';btn.disabled=false;return;}
+      if(await _isEmailRegistered(email)){err.textContent='An account with this email already exists. Try logging in instead.';btn.textContent='Sign Up';btn.disabled=false;return;}
       if(await _isUsernameTakenThrottled(username,err)){err.textContent='Username already taken.';btn.textContent='Sign Up';btn.disabled=false;return;}
       const {error,data}=await _sb.auth.signUp({email,password:pass});
-      if(error){ _recordSignupAttempt(false); throw error; }
+      if(error){ _recordSignupAttempt(false); if(_isDuplicateEmailError(error)){err.textContent='An account with this email already exists. Try logging in instead.';btn.textContent='Sign Up';btn.disabled=false;return;} throw error; }
       _recordSignupAttempt(true);
       if(data.user){
-        // Create profile in DB (will be usable once email is verified)
-        await _sb.from('profiles').insert({id:data.user.id,username,avatar_color:'#7c5cfc'});
-        localStorage.setItem('slateUsername',username);
+        try{
+          await _sb.from('profiles').insert({id:data.user.id,username,avatar_color:'#7c5cfc'});
+          localStorage.setItem('slateUsername',username);
+        }catch(insErr){
+          const insMsg=(insErr.message||'').toLowerCase();
+          if(insMsg.includes('23505')||insMsg.includes('duplicate')||insMsg.includes('unique')){err.textContent='Username is already taken. Please choose a different one.';btn.textContent='Sign Up';btn.disabled=false;return;}
+          throw insErr;
+        }
         // Show verification view — do NOT hide auth screen
         _showAuthConfirmView(email);
       }
@@ -1942,6 +1967,8 @@ async function authSubmit(){
     // If Supabase says email not confirmed, show verify view
     if(e.message && (e.message.includes('Email not confirmed') || e.message.includes('email_not_confirmed'))){
       _showAuthConfirmView(email);
+    } else if(_isDuplicateEmailError(e)){
+      err.textContent='An account with this email already exists. Try logging in instead.';
     } else {
       err.textContent=e.message||'Something went wrong.';
     }
@@ -1981,7 +2008,7 @@ async function authGoogle(){
 const _SCREENS=['home','profileNav','accountSettingsPage','settingsPage','aboutPage'];
 function showScreen(id){
   _SCREENS.forEach(s=>{ const el=document.getElementById(s); if(el) el.style.display=(s===id?'flex':'none'); });
-  if(id==='profileNav') navRefresh();
+  if(id==='profileNav') requestAnimationFrame(()=>navRefresh());
   if(id==='settingsPage') settingsOpen();
 }
 const world=document.getElementById('world');
@@ -3577,6 +3604,21 @@ function extractContent(card, type){
   return {};
 }
 
+/* ── Min card sizes per type (matches CSS min-width/min-height) ── */
+const _MIN_SIZES={
+  note:[230,170],
+  todo:[370,240],
+  link:[260,200],
+  music:[260,260],
+  image:[260,260],
+  video:[260,260],
+  countdown:[220,200],
+  gallery:[220,220],
+  code:[260,180],
+  draw:[340,340],
+  sheet:[280,160]
+};
+
 /* ── Restore canvas state ── */
 function restoreCanvas(name){
   const data = canvasDB[name];
@@ -3592,7 +3634,10 @@ function restoreCanvas(name){
     const card=document.createElement('div');
     card.className='card'; card.dataset.type=c.type;
     card.style.left=c.x+'px'; card.style.top=c.y+'px';
-    card.style.width=c.w+'px'; card.style.height=c.h+'px';
+    const _ms=_MIN_SIZES[c.type]||[120,100];
+    const fw=Math.max(c.w,_ms[0]);
+    const fh=Math.max(c.h,_ms[1]);
+    card.style.width=fw+'px'; card.style.height=fh+'px';
     card.style.zIndex=c.zIndex; ztop=Math.max(ztop,c.zIndex);
     card.dataset.cardId=c.cardId||('c'+Date.now()+'_'+Math.random().toString(36).slice(2,7));
     card.innerHTML=buildCard(c.type,cid);
@@ -3617,6 +3662,14 @@ function restoreCanvas(name){
   // Restore ribbons — cards must be in DOM first
   ribbonDB=(data.ribbons||[]).map(r=>({...r}));
   renderAllRibbons();
+  // Sync inline styles with actual computed sizes after CSS min constraints apply
+  void world.offsetHeight;
+  document.querySelectorAll('#world .card').forEach(card=>{
+    const rw=card.offsetWidth, rh=card.offsetHeight;
+    const sw=parseFloat(card.style.width)||0, sh=parseFloat(card.style.height)||0;
+    if(rw!==sw && rw>0) card.style.width=rw+'px';
+    if(rh!==sh && rh>0) card.style.height=rh+'px';
+  });
 }
 
 function restoreContent(card, type, content){
@@ -7266,11 +7319,13 @@ function _stZoomSens(){ return _ZOOM_SENS[_ST.zoomSensitivity] || _ZOOM_SENS.med
 /* ── Settings UI ── */
 function settingsOpen(){
   requestAnimationFrame(()=>{
-    _stRenderGrid();
-    _stRenderSliders();
-    _stRenderColors();
-    _stRenderFormats();
+    _stRenderGrid(); _stRenderSliders(); _stRenderColors(); _stRenderFormats();
     if(window._stInitSlider) _stInitSlider();
+    requestAnimationFrame(()=>{
+      _stSegMove('stZoomSeg', ['slow','medium','fast'].indexOf(_ST.zoomSensitivity), 3);
+      _stSegMove('stDateSeg', ['DD/MM/YYYY','MM/DD/YYYY','YYYY-MM-DD'].indexOf(_ST.dateFormat), 3);
+      _stSegMove('stTimeSeg', ['12h','24h'].indexOf(_ST.timeFormat), 2);
+    });
   });
 }
 
@@ -7295,7 +7350,6 @@ function _stRenderSliders(){
     const btn = document.getElementById('stZoom_'+v);
     if(btn) btn.classList.toggle('active', _ST.zoomSensitivity === v);
   });
-  _stSegMove('stZoomSeg', zs.indexOf(_ST.zoomSensitivity), 3);
 }
 
 function _stRenderColors(){
@@ -7309,13 +7363,11 @@ function _stRenderFormats(){
     const btn = document.getElementById('stDate_'+v.replace(/\//g,'_'));
     if(btn) btn.classList.toggle('active', _ST.dateFormat === v);
   });
-  _stSegMove('stDateSeg', ['DD/MM/YYYY','MM/DD/YYYY','YYYY-MM-DD'].indexOf(_ST.dateFormat), 3);
 
   ['12h','24h'].forEach(v=>{
     const btn = document.getElementById('stTime_'+v);
     if(btn) btn.classList.toggle('active', _ST.timeFormat === v);
   });
-  _stSegMove('stTimeSeg', ['12h','24h'].indexOf(_ST.timeFormat), 2);
 }
 
 /* Segmented indicator positioning */
@@ -7355,6 +7407,7 @@ function stSetSnapSize(v){
 function stSetZoom(v){
   _ST.zoomSensitivity = v;
   _stSave(); _stRenderSliders();
+  _stSegMove('stZoomSeg', ['slow','medium','fast'].indexOf(v), 3);
 }
 function stSetColor(v){
   _ST.defaultCardColor = v;
@@ -7363,10 +7416,12 @@ function stSetColor(v){
 function stSetDateFormat(v){
   _ST.dateFormat = v;
   _stSave(); _stRenderFormats();
+  _stSegMove('stDateSeg', ['DD/MM/YYYY','MM/DD/YYYY','YYYY-MM-DD'].indexOf(v), 3);
 }
 function stSetTimeFormat(v){
   _ST.timeFormat = v;
   _stSave(); _stRenderFormats();
+  _stSegMove('stTimeSeg', ['12h','24h'].indexOf(v), 2);
 }
 
 // Patch snapVal to use dynamic size
@@ -7395,6 +7450,14 @@ function stSetTimeFormat(v){
     const r=track.getBoundingClientRect();
     const t=(e.changedTouches&&e.changedTouches[0])||e.touches[0];
     const pct=(t.clientX-r.left)/r.width;
+    return _pctToVal(pct);
+  }
+
+  function _valFromMouse(e){
+    const track=document.getElementById('stSnapTrack');
+    if(!track) return _startVal;
+    const r=track.getBoundingClientRect();
+    const pct=(e.clientX-r.left)/r.width;
     return _pctToVal(pct);
   }
 
@@ -7444,6 +7507,32 @@ function stSetTimeFormat(v){
     _render(_startVal);
   }
 
+  function onMouseDown(e){
+    e.stopPropagation();
+    e.preventDefault();
+    const track=document.getElementById('stSnapTrack');
+    if(!track) return;
+    _cancelled=false; _active=true; _fromThumb=true;
+    _startX=e.clientX; _startY=e.clientY;
+    _startVal=_ST.snapGridSize;
+    _render(_valFromMouse(e));
+    document.body.style.userSelect='none'; document.body.style.webkitUserSelect='none';
+  }
+  document.addEventListener('mousemove',function(e){
+    if(!_active) return;
+    e.stopPropagation();
+    if(_cancelled) return;
+    const v=_valFromMouse(e);
+    _render(v);
+  });
+  document.addEventListener('mouseup',function(e){
+    if(!_active) return;
+    document.body.style.userSelect=''; document.body.style.webkitUserSelect='';
+    _active=false;
+    if(_cancelled) return;
+    stSetSnapSize(_valFromMouse(e));
+  });
+
   // Attach after DOM ready — called from settingsOpen
   window._stInitSlider = function(){
     const track=document.getElementById('stSnapTrack');
@@ -7453,6 +7542,7 @@ function stSetTimeFormat(v){
     track.addEventListener('touchmove', onTouchMove, {passive:false});
     track.addEventListener('touchend', onTouchEnd, {passive:false});
     track.addEventListener('touchcancel', onTouchCancel);
+    track.addEventListener('mousedown', onMouseDown);
     _render(_ST.snapGridSize);
   };
 })();
@@ -7517,13 +7607,20 @@ async function authPopupSubmit(){
       if(!_checkSignupThrottle(err)){btn.textContent='Sign Up';btn.disabled=false;return;}
       if(!_validateUsername(username,err)){btn.textContent='Sign Up';btn.disabled=false;return;}
       if(pass.length<6){err.textContent='Password must be at least 6 characters.';btn.textContent='Sign Up';btn.disabled=false;return;}
+      if(await _isEmailRegistered(email)){err.textContent='An account with this email already exists. Try logging in instead.';btn.textContent='Sign Up';btn.disabled=false;return;}
       if(await _isUsernameTakenThrottled(username,err)){err.textContent='Username already taken.';btn.textContent='Sign Up';btn.disabled=false;return;}
       const {error,data}=await _sb.auth.signUp({email,password:pass});
-      if(error){ _recordSignupAttempt(false); throw error; }
+      if(error){ _recordSignupAttempt(false); if(_isDuplicateEmailError(error)){err.textContent='An account with this email already exists. Try logging in instead.';btn.textContent='Sign Up';btn.disabled=false;return;} throw error; }
       _recordSignupAttempt(true);
       if(data.user){
-        await _sb.from('profiles').insert({id:data.user.id,username,avatar_color:'#7c5cfc'});
-        localStorage.setItem('slateUsername',username);
+        try{
+          await _sb.from('profiles').insert({id:data.user.id,username,avatar_color:'#7c5cfc'});
+          localStorage.setItem('slateUsername',username);
+        }catch(insErr){
+          const insMsg=(insErr.message||'').toLowerCase();
+          if(insMsg.includes('23505')||insMsg.includes('duplicate')||insMsg.includes('unique')){err.textContent='Username is already taken. Please choose a different one.';btn.textContent='Sign Up';btn.disabled=false;return;}
+          throw insErr;
+        }
         // Show verification view in popup — do NOT close
         _pendingVerifyEmail=email;
         sessionStorage.setItem('slate_pending_verify',email);
@@ -7552,6 +7649,8 @@ async function authPopupSubmit(){
       prBtn.disabled=false;
       prBtn.textContent='Resend verification email';
       pcv.querySelector('.auth-confirm-hint').textContent="Didn't receive it? Check your spam folder.";
+    } else if(_isDuplicateEmailError(e)){
+      err.textContent='An account with this email already exists. Try logging in instead.';
     } else {
       err.textContent=e.message||'Something went wrong.';
     }
@@ -7859,7 +7958,7 @@ async function pfpCropApply(){
           </div>
           <div class="st-slider-val" id="stSnapSizeVal">40px</div>
         </div>
-        <div style="margin-top:1px;position:relative;height:20px;display:flex;align-items:center;" id="stSnapTrack">
+        <div style="margin-top:1px;position:relative;height:28px;display:flex;align-items:center;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;" id="stSnapTrack">
           <div style="position:absolute;left:0;right:0;height:3px;border-radius:2px;background:var(--s3);pointer-events:none;" id="stSnapTrackBg"></div>
           <div style="position:absolute;left:0;height:3px;border-radius:2px;background:var(--t1);pointer-events:none;transition:width .08s;" id="stSnapFill"></div>
           <div style="position:absolute;width:18px;height:18px;border-radius:50%;background:var(--t1);box-shadow:0 1px 4px rgba(0,0,0,.5);transform:translateX(-9px);pointer-events:none;transition:left .08s;" id="stSnapThumb"></div>

@@ -1,3 +1,4 @@
+<!-- Slate V4 - patched build -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1661,6 +1662,13 @@ function _isDuplicateEmailError(error){
   return false;
 }
 
+async function _checkGoogleEmail(mode){
+  try{
+    window._googleAuthMode=mode;
+    return true;
+  }catch(e){ return true; }
+}
+
 // Fetch profile row from Supabase and sync to localStorage + DOM.
 // Creates a row for OAuth users who never went through email signup.
 async function _loadUserProfile(user){
@@ -1711,7 +1719,23 @@ async function _loadUserProfile(user){
       _showUsernameSetup(user);
     }
   }catch(e){
-    // profile load failed (network/db error) — continue with whatever is in localStorage
+    console.error('Profile load failed:',e);
+    try{
+      const profileExists=await _sb.from('profiles').select('id').eq('id',user.id).maybeSingle();
+      if(!profileExists && user.app_metadata?.provider){
+        const base=(user.email?.split('@')[0]||'user').toLowerCase().replace(/[^a-z0-9_]/g,'');
+        let fallbackUsername=base;
+        let attempt=0;
+        while(await _isUsernameTaken(fallbackUsername)){
+          attempt++; fallbackUsername=base+attempt;
+        }
+        try{
+          await _sb.from('profiles').insert({id:user.id,username:fallbackUsername,avatar_color:'#7c5cfc'});
+          localStorage.setItem('slateUsername',fallbackUsername);
+        }catch(insErr){}
+      }
+    }catch(retryErr){}
+    renderHome();
     navRefresh();
   }
 }
@@ -1854,13 +1878,29 @@ async function authInit(){
     const prev=_sbUser?.id;
     _sbUser=session?.user||null;
     if(_sbUser){
-      // Close auth popup if it's open (e.g. user verified email in another tab)
       document.getElementById('authPopup').style.display='none';
-      _showAuthFormView(); // resets confirm view + clears sessionStorage pending verify
-      _hideAuthScreen();
-      if(_sbUser.id!==prev) await _loadUserProfile(_sbUser);
+      _showAuthFormView();
+      try{
+        let {data:existingProfile}=await _sb.from('profiles').select('id,username').eq('id',_sbUser.id).maybeSingle();
+        if(existingProfile){
+          _hideAuthScreen();
+          if(_sbUser.id!==prev) await _loadUserProfile(_sbUser);
+        }else{
+          const isOAuth=!!_sbUser.app_metadata?.provider;
+          if(isOAuth){
+            _hideAuthScreen();
+            await _loadUserProfile(_sbUser);
+          }else{
+            _hideAuthScreen();
+            await _loadUserProfile(_sbUser);
+          }
+        }
+      }catch(profileErr){
+        console.error('Profile check failed:',profileErr);
+        _hideAuthScreen();
+        try{ await _loadUserProfile(_sbUser); }catch(e2){}
+      }
     } else {
-      // No session — show auth screen
       _showAuthScreen();
       _showAuthFormView();
     }
@@ -1997,6 +2037,7 @@ function authGuest(){
 async function authGoogle(){
   const err=document.getElementById('authErr');
   err.textContent='';
+  window._googleAuthMode='login';
   try{
     const {data,error}=await _sb.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});
     if(error) throw error;
@@ -3870,6 +3911,21 @@ function closeCtxMenu(){
 /* ── Confirm dialog ── */
 let _confirmCb=null;
 const _genericConfirmOk=()=>{ const cb=_confirmCb; closeConfirm(); if(cb) setTimeout(cb,0); };
+function showToast(msg,duration){
+  duration=duration||3000;
+  let t=document.getElementById('_toast');
+  if(t) t.remove();
+  t=document.createElement('div');
+  t.id='_toast';
+  t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:rgba(20,20,20,.95);color:#f0f0f0;padding:12px 20px;border-radius:12px;font-size:13px;font-family:"DM Sans",sans-serif;z-index:99999;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;max-width:90vw;text-align:center;border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(8px);box-shadow:0 8px 32px rgba(0,0,0,.4);';
+  t.textContent=msg;
+  document.body.appendChild(t);
+  requestAnimationFrame(()=>{
+    t.style.opacity='1';t.style.transform='translateX(-50%) translateY(0)';
+    setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(20px)';setTimeout(()=>{if(t.parentNode)t.remove();},200);},duration);
+  });
+}
+
 function showConfirm(title, msg, okLabel, cb){
   closeCtxMenu();
   // Clean up any previous dynamic content left by _showUsernameSetup, _mdDeleteAccount, _mdDeleteDataMenu
@@ -7211,8 +7267,18 @@ async function _mdLogOut(){
     _showAuthScreen();
   });
 }
+async function _deleteAuthUser(uid){
+  try{
+    await _sb.auth.admin.deleteUser(uid);
+    return true;
+  }catch(e){}
+  try{
+    const {data,error}=await _sb.functions.invoke('delete-user',{body:{uid}});
+    if(!error) return true;
+  }catch(e){}
+  return false;
+}
 async function _mdDeleteAccount(){
-  // Show custom "Type DELETE" confirmation
   closeCtxMenu();
   const ov=document.getElementById('confirmOverlay');
   const box=document.getElementById('confirmBox');
@@ -7221,7 +7287,6 @@ async function _mdDeleteAccount(){
   const okBtn=document.getElementById('confirmOkBtn');
   okBtn.textContent='Delete Account';
   okBtn.style.opacity='.35';okBtn.style.pointerEvents='none';
-  // Replace confirm body with type-to-confirm input
   const msgEl=document.getElementById('confirmMsg');
   msgEl.insertAdjacentHTML('afterend',`
     <div id="_delAccInput" style="margin-top:14px;">
@@ -7230,17 +7295,24 @@ async function _mdDeleteAccount(){
     </div>
   `);
   _confirmCb=async()=>{
-    // Safety: verify user is still logged in before destructive action
     if(!_sbUser){ closeConfirm(); _showAuthScreen(); return; }
+    const uid=_sbUser.id;
+    let fullyDeleted=false;
     try{
-      // Delete PFP from storage
-      try{ await _sb.storage.from('avatars').remove(`pfp/${_sbUser.id}.jpg`); }catch(e){}
-      // Delete profile row
-      await _sb.from('profiles').delete().eq('id',_sbUser.id);
-      // Delete auth user
-      await _sb.auth.admin.deleteUser(_sbUser.id);
-    }catch(e){/* admin API may not be available with anon key — fallback: clear profile data only */  try{ await _sb.from('profiles').update({canvas_data:{},folder_data:{},quick_data:{},settings:null,data_version:0,display_name:null,username:'deleted',avatar_url:null}).eq('id',_sbUser.id); }catch(e2){} }
+      try{ await _sb.storage.from('avatars').remove('pfp/'+uid+'.jpg'); }catch(e){}
+      try{ await _sb.from('profiles').delete().eq('id',uid); }catch(e){}
+      try{
+        await _sb.auth.admin.deleteUser(uid);
+        fullyDeleted=true;
+      }catch(e){
+        try{
+          const {data,error}=await _sb.functions.invoke('delete-user',{body:{uid}});
+          if(!error) fullyDeleted=true;
+        }catch(e2){}
+      }
+    }catch(e){}
     localStorage.clear();
+    sessionStorage.clear();
     try{ await _sb.auth.signOut(); }catch(e){}
     _sbUser=null;
     location.reload();
@@ -7681,6 +7753,7 @@ async function authPopupResendVerification(){
 async function authPopupGoogle(){
   const err=document.getElementById('authPopupErr');
   err.textContent='';
+  window._googleAuthMode='login';
   try{
     const {data,error}=await _sb.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});
     if(error) throw error;
